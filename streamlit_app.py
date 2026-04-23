@@ -210,7 +210,7 @@ st.sidebar.divider()
 st.sidebar.markdown("### ⚙️ 분석 설정")
 model = st.sidebar.selectbox(
     "AI 모델 선택",
-    ["claude-sonnet-4-20250514", "claude-opus-4-1-20250805"],
+    ["claude-sonnet-4-6", "claude-opus-4-7"],
     help="사용할 Claude 모델 선택"
 )
 
