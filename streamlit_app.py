@@ -1,11 +1,13 @@
 """
-백화점 경쟁사 행사 AI 분석 시스템 — Streamlit 버전
-Streamlit Cloud 배포용 (app.py 수정 없이 동일 기능 제공)
+백화점 경쟁사 행사 AI 분석 시스템 — Streamlit 버전 (웹크롤링)
+Streamlit Cloud 배포용 (URL 기반 분석)
 """
 import os, json, base64, io, re
 from datetime import datetime
 import streamlit as st
 import anthropic
+import requests
+from bs4 import BeautifulSoup
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -20,27 +22,63 @@ def get_api_key():
         pass
     return os.environ.get("ANTHROPIC_API_KEY", "")
 
-SYSTEM = "당신은 백화점 MD 경쟁분석 전문가입니다. 이미지에서 행사 정보를 추출해 JSON으로만 응답하세요. 마크다운 없이 순수 JSON만 출력하세요."
+SYSTEM = "당신은 백화점 MD 경쟁분석 전문가입니다. 홈페이지에서 행사 정보를 추출해 JSON으로만 응답하세요. 마크다운 없이 순수 JSON만 출력하세요."
 
 
-def extract_events(cl, uploaded_files, store_name, model="claude-sonnet-4-20250514"):
-    if not uploaded_files:
+def fetch_website_content(url):
+    """웹사이트 내용 크롤링"""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.encoding = 'utf-8'
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # 스크립트, 스타일 제거
+        for script in soup(["script", "style"]):
+            script.decompose()
+        
+        # 텍스트 추출
+        text = soup.get_text(separator='\n', strip=True)
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        return '\n'.join(lines[:5000])  # 첫 5000자 제한
+    except Exception as e:
+        return f"크롤링 실패: {str(e)}"
+
+
+def extract_events(cl, url, store_name, model="claude-sonnet-4-20250514"):
+    """웹페이지에서 행사 정보 추출"""
+    if not url:
         return []
-    content = []
-    for f in uploaded_files:
-        data = base64.b64encode(f.read()).decode()
-        mime = f.type or "image/jpeg"
-        content.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}})
-        f.seek(0)
-    content.append({"type": "text", "text": f"""이 이미지들은 {store_name} 카카오채널 스크린샷입니다.
-모든 행사·팝업·사은혜택·이벤트를 추출하세요.
-JSON 형식: {{"events":[{{"category":"상품군","name":"행사명","detail":"내용","period":"기간","type":"유형"}}]}}"""})
+    
+    content = fetch_website_content(url)
+    
+    prompt = f"""{store_name} 백화점 홈페이지 내용입니다. 진행 중인 모든 행사·팝업·사은혜택·이벤트를 추출하세요.
+
+웹페이지 내용:
+{content[:3000]}
+
+JSON 형식 (한글로 작성): {{"events":[{{"category":"상품군","name":"행사명","detail":"내용","period":"기간","type":"유형"}}]}}
+
+추출할 정보:
+- category: 패션/스포츠·레저/뷰티/식품F&B/리빙가구/팝업스토어/사은혜택/문화이벤트
+- name: 행사명
+- detail: 행사 내용/설명
+- period: 기간 (예: 04.23(목) ~ 05.06(수))
+- type: 진행중/예정/종료
+"""
+    
     resp = cl.messages.create(
         model=model, max_tokens=2000,
-        system=SYSTEM, messages=[{"role": "user", "content": content}]
+        system=SYSTEM, messages=[{"role": "user", "content": prompt}]
     )
     raw = re.sub(r"```json?\n?", "", resp.content[0].text).replace("```", "").strip()
-    return json.loads(raw).get("events", [])
+    try:
+        return json.loads(raw).get("events", [])
+    except json.JSONDecodeError:
+        return []
 
 
 def compare(cl, lotte, hyundai, model="claude-sonnet-4-20250514"):
@@ -245,53 +283,58 @@ with st.sidebar:
     st.caption("🏬 백화점 행사 AI 분석 v1.0")
 
 st.markdown("## 🏬 백화점 행사 AI 분석")
-st.caption("롯데백화점 대구점 vs 더현대 대구 — 카카오채널 스크린샷 비교 분석")
+st.caption("롯데백화점 대구점 vs 더현대 대구 — 홈페이지 자동 분석")
+
+# 기본 URL 설정
+default_lotte_url = "https://www.lotteshopping.com/contents/shpgInfo?cstrCd=0023&cntsTpCd=C00903"
+default_hyundai_url = "https://www.ehyundai.com/newPortal/SN/SN_0101000.do?branchCd=B00146000"
 
 col_l, col_h = st.columns(2)
 with col_l:
     st.markdown("### 🔴 롯데백화점 대구점")
-    lotte_files = st.file_uploader(
-        f"카카오채널 스크린샷 업로드 (최대 {max_files}장)",
-        type=["jpg", "jpeg", "png", "webp"],
-        accept_multiple_files=True,
-        key="lotte",
+    lotte_url = st.text_input(
+        "롯데 URL",
+        value=default_lotte_url,
+        placeholder="https://...",
+        label_visibility="collapsed",
     )
-    if lotte_files:
-        cols = st.columns(min(len(lotte_files), 5))
-        for i, f in enumerate(lotte_files[:max_files]):
-            cols[i % 5].image(f, width=80)
+    if lotte_url:
+        st.caption("✅ 롯데 URL 입력됨")
 
 with col_h:
     st.markdown("### 🔵 더현대 대구")
-    hyundai_files = st.file_uploader(
-        f"카카오채널 스크린샷 업로드 (최대 {max_files}장)",
-        type=["jpg", "jpeg", "png", "webp"],
-        accept_multiple_files=True,
-        key="hyundai",
+    hyundai_url = st.text_input(
+        "현대 URL",
+        value=default_hyundai_url,
+        placeholder="https://...",
+        label_visibility="collapsed",
     )
-    if hyundai_files:
-        cols = st.columns(min(len(hyundai_files), 5))
-        for i, f in enumerate(hyundai_files[:max_files]):
-            cols[i % 5].image(f, width=80)
+    if hyundai_url:
+        st.caption("✅ 현대 URL 입력됨")
 
 st.divider()
 
 if st.button("🤖 AI 분석 시작", type="primary", use_container_width=True):
-    if not lotte_files and not hyundai_files:
-        st.error("이미지를 최소 한 장 이상 업로드해주세요.")
+    if not lotte_url and not hyundai_url:
+        st.error("최소 하나의 URL을 입력해주세요.")
     elif not api_key:
         st.error("왼쪽 사이드바에 Anthropic API 키를 입력해주세요.")
     else:
         cl = anthropic.Anthropic(api_key=api_key)
-        with st.spinner("이미지 분석 중... (20~40초 소요)"):
+        with st.spinner("웹페이지 분석 중... (20~40초 소요)"):
             try:
-                lotte_ev = extract_events(cl, lotte_files[:max_files], "롯데백화점 대구점", model)
-                hyundai_ev = extract_events(cl, hyundai_files[:max_files], "더현대 대구", model)
-                result = compare(cl, lotte_ev, hyundai_ev, model)
-                result["lotte_events"] = lotte_ev
-                result["hyundai_events"] = hyundai_ev
-                result["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                st.session_state["result"] = result
+                lotte_ev = extract_events(cl, lotte_url, "롯데백화점 대구점", model) if lotte_url else []
+                hyundai_ev = extract_events(cl, hyundai_url, "더현대 대구", model) if hyundai_url else []
+                
+                if not lotte_ev and not hyundai_ev:
+                    st.error("분석 결과가 없습니다. 웹페이지를 확인해주세요.")
+                else:
+                    result = compare(cl, lotte_ev, hyundai_ev, model)
+                    result["lotte_events"] = lotte_ev
+                    result["hyundai_events"] = hyundai_ev
+                    result["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    st.session_state["result"] = result
+                    st.success("✅ 분석 완료!")
             except Exception as e:
                 st.error(f"분석 실패: {e}")
 

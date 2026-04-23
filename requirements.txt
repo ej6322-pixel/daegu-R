@@ -3,3 +3,5 @@ anthropic
 openpyxl
 pillow
 flask
+requests
+beautifulsoup4
