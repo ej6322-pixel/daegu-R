@@ -23,7 +23,7 @@ def get_api_key():
 SYSTEM = "당신은 백화점 MD 경쟁분석 전문가입니다. 이미지에서 행사 정보를 추출해 JSON으로만 응답하세요. 마크다운 없이 순수 JSON만 출력하세요."
 
 
-def extract_events(cl, uploaded_files, store_name):
+def extract_events(cl, uploaded_files, store_name, model="claude-sonnet-4-20250514"):
     if not uploaded_files:
         return []
     content = []
@@ -36,14 +36,14 @@ def extract_events(cl, uploaded_files, store_name):
 모든 행사·팝업·사은혜택·이벤트를 추출하세요.
 JSON 형식: {{"events":[{{"category":"상품군","name":"행사명","detail":"내용","period":"기간","type":"유형"}}]}}"""})
     resp = cl.messages.create(
-        model="claude-sonnet-4-20250514", max_tokens=2000,
+        model=model, max_tokens=2000,
         system=SYSTEM, messages=[{"role": "user", "content": content}]
     )
     raw = re.sub(r"```json?\n?", "", resp.content[0].text).replace("```", "").strip()
     return json.loads(raw).get("events", [])
 
 
-def compare(cl, lotte, hyundai):
+def compare(cl, lotte, hyundai, model="claude-sonnet-4-20250514"):
     lt = "\n".join([f"[{e['category']}] {e['name']}: {e['detail']}" for e in lotte])
     ht = "\n".join([f"[{e['category']}] {e['name']}: {e['detail']}" for e in hyundai])
     prompt = f"""롯데백화점 대구점과 더현대 대구 행사를 비교 분석하세요.
@@ -59,7 +59,7 @@ JSON 형식으로만 응답:
 상품군: 패션/스포츠·레저/뷰티/식품F&B/리빙가구/팝업스토어/사은혜택/문화이벤트
 insight는 롯데 영업기획팀 입장의 실전 전략 제언으로 작성"""
     resp = cl.messages.create(
-        model="claude-sonnet-4-20250514", max_tokens=2000,
+        model=model, max_tokens=2000,
         messages=[{"role": "user", "content": prompt}]
     )
     raw = re.sub(r"```json?\n?", "", resp.content[0].text).replace("```", "").strip()
@@ -251,27 +251,27 @@ col_l, col_h = st.columns(2)
 with col_l:
     st.markdown("### 🔴 롯데백화점 대구점")
     lotte_files = st.file_uploader(
-        "카카오채널 스크린샷 업로드 (최대 10장)",
+        f"카카오채널 스크린샷 업로드 (최대 {max_files}장)",
         type=["jpg", "jpeg", "png", "webp"],
         accept_multiple_files=True,
         key="lotte",
     )
     if lotte_files:
         cols = st.columns(min(len(lotte_files), 5))
-        for i, f in enumerate(lotte_files[:10]):
+        for i, f in enumerate(lotte_files[:max_files]):
             cols[i % 5].image(f, width=80)
 
 with col_h:
     st.markdown("### 🔵 더현대 대구")
     hyundai_files = st.file_uploader(
-        "카카오채널 스크린샷 업로드 (최대 10장)",
+        f"카카오채널 스크린샷 업로드 (최대 {max_files}장)",
         type=["jpg", "jpeg", "png", "webp"],
         accept_multiple_files=True,
         key="hyundai",
     )
     if hyundai_files:
         cols = st.columns(min(len(hyundai_files), 5))
-        for i, f in enumerate(hyundai_files[:10]):
+        for i, f in enumerate(hyundai_files[:max_files]):
             cols[i % 5].image(f, width=80)
 
 st.divider()
@@ -285,9 +285,9 @@ if st.button("🤖 AI 분석 시작", type="primary", use_container_width=True):
         cl = anthropic.Anthropic(api_key=api_key)
         with st.spinner("이미지 분석 중... (20~40초 소요)"):
             try:
-                lotte_ev = extract_events(cl, lotte_files[:10], "롯데백화점 대구점")
-                hyundai_ev = extract_events(cl, hyundai_files[:10], "더현대 대구")
-                result = compare(cl, lotte_ev, hyundai_ev)
+                lotte_ev = extract_events(cl, lotte_files[:max_files], "롯데백화점 대구점", model)
+                hyundai_ev = extract_events(cl, hyundai_files[:max_files], "더현대 대구", model)
+                result = compare(cl, lotte_ev, hyundai_ev, model)
                 result["lotte_events"] = lotte_ev
                 result["hyundai_events"] = hyundai_ev
                 result["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
