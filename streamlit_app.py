@@ -98,17 +98,31 @@ JSON 형식 (한글로 작성): {{"events":[{{"category":"상품군","name":"행
 def compare(cl, lotte, hyundai, model="claude-sonnet-4-6"):
     lt = "\n".join([f"[{e['category']}] {e['name']}: {e['detail']}" for e in lotte])
     ht = "\n".join([f"[{e['category']}] {e['name']}: {e['detail']}" for e in hyundai])
-    prompt = f"""롯데백화점 대구점과 더현대 대구 행사를 비교 분석하세요.
+    prompt = f"""롯데백화점 대구점과 더현대 대구의 행사를 두 가지 관점으로 비교 분석하세요.
 
-롯데:\n{lt}\n\n더현대:\n{ht}
+롯데 행사 목록:\n{lt}
 
-JSON 형식으로만 응답:
-{{"categories":[{{"category":"상품군","lotte":"롯데내용","hyundai":"현대내용","winner":"롯데|더현대|비슷","point":"한줄포인트"}}],
-"lotte_strength":["강점1","강점2","강점3"],
-"hyundai_strength":["강점1","강점2","강점3"],
-"insight":["MD 전략 제언1","제언2","제언3","제언4"]}}
+더현대 행사 목록:\n{ht}
 
-상품군: 패션/스포츠·레저/뷰티/식품F&B/리빙가구/팝업스토어/사은혜택/문화이벤트
+아래 JSON 형식으로만 응답하세요 (마크다운 없이 순수 JSON):
+{{
+  "categories": [
+    {{"category":"상품군명","lotte":"롯데 행사 요약","hyundai":"현대 행사 요약","winner":"롯데|더현대|비슷","point":"한줄 비교 포인트"}}
+  ],
+  "saeunn": [
+    {{"type":"사은행사 유형","lotte":"롯데 내용","hyundai":"현대 내용","winner":"롯데|더현대|비슷","point":"한줄 비교 포인트"}}
+  ],
+  "lotte_strength": ["강점1","강점2","강점3"],
+  "hyundai_strength": ["강점1","강점2","강점3"],
+  "insight": ["제언1","제언2","제언3","제언4"]
+}}
+
+[categories] 상품군별 행사 비교 — 각 상품군에서 어느 백화점이 더 강한지:
+상품군: 패션/스포츠·레저/뷰티/식품F&B/리빙가구/팝업스토어/문화이벤트
+
+[saeunn] 사은행사 비교 — 고객 혜택 측면 비교:
+유형: 사은품·경품/추가할인·쿠폰/적립혜택/VIP·우수고객혜택/제휴카드혜택/기타사은행사
+
 insight는 롯데 영업기획팀 입장의 실전 전략 제언으로 작성"""
     resp = cl.messages.create(
         model=model, max_tokens=4096,
@@ -170,6 +184,18 @@ def build_excel(data):
         for ci, k in enumerate(["category", "name", "detail", "period", "type"], 1):
             td(ws3.cell(row=r, column=ci, value=ev.get(k, "")), bg=bg)
         ws3.row_dimensions[r].height = 36
+
+    ws_sa = wb.create_sheet("사은행사 비교"); ws_sa.sheet_view.showGridLines = False
+    ws_sa.merge_cells("A1:E1"); c = ws_sa["A1"]; c.value = f"사은행사 비교 ({data.get('analyzed_at', '')})"; th(c, bg="856404", sz=12); ws_sa.row_dimensions[1].height = 26
+    for i, (h, w) in enumerate([("사은행사 유형", 18), ("롯데백화점", 36), ("더현대 대구", 36), ("우세", 10), ("비교포인트", 32)], 1):
+        ws_sa.column_dimensions[get_column_letter(i)].width = w
+        th(ws_sa.cell(row=2, column=i, value=h), bg="6b4f00")
+    for r, sa in enumerate(data.get("saeunn", []), 3):
+        ws_sa.row_dimensions[r].height = 42
+        bg = "FFFDE7" if r % 2 == 0 else "FFFFFF"
+        w = sa.get("winner", "비슷"); wfc = "C00020" if w == "롯데" else ("003087" if w == "더현대" else "555555")
+        for ci, v in enumerate([sa.get("type"), sa.get("lotte", "—"), sa.get("hyundai", "—"), w, sa.get("point", "")], 1):
+            td(ws_sa.cell(row=r, column=ci, value=v), bg=bg, bold=(ci == 1 or ci == 4), fc=wfc if ci == 4 else "111111", center=(ci == 1 or ci == 4))
 
     ws4 = wb.create_sheet("AI 분석"); ws4.sheet_view.showGridLines = False
     ws4.column_dimensions["A"].width = 18; ws4.column_dimensions["B"].width = 60
@@ -332,21 +358,43 @@ if st.button("🤖 AI 분석 시작", type="primary", use_container_width=True):
 if "result" in st.session_state:
     result = st.session_state["result"]
 
-    st.subheader("📊 상품군별 비교표")
-    categories = result.get("categories", [])
-    if categories:
-        rows = []
-        for c in categories:
-            w = c.get("winner", "비슷")
-            badge = "🔴 롯데 우세" if w == "롯데" else ("🔵 더현대 우세" if w == "더현대" else "⚪ 비슷")
-            rows.append({
-                "상품군": c.get("category", ""),
-                "롯데백화점": c.get("lotte", "—"),
-                "더현대 대구": c.get("hyundai", "—"),
-                "우세": badge,
-                "비교 포인트": c.get("point", ""),
-            })
-        st.dataframe(rows, use_container_width=True, hide_index=True)
+    tab1, tab2 = st.tabs(["🛍️ 상품군별 행사 비교", "🎁 사은행사 비교"])
+
+    with tab1:
+        categories = result.get("categories", [])
+        if categories:
+            rows = []
+            for c in categories:
+                w = c.get("winner", "비슷")
+                badge = "🔴 롯데 우세" if w == "롯데" else ("🔵 더현대 우세" if w == "더현대" else "⚪ 비슷")
+                rows.append({
+                    "상품군": c.get("category", ""),
+                    "롯데백화점": c.get("lotte", "—"),
+                    "더현대 대구": c.get("hyundai", "—"),
+                    "우세": badge,
+                    "비교 포인트": c.get("point", ""),
+                })
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+        else:
+            st.info("상품군별 행사 정보가 없습니다.")
+
+    with tab2:
+        saeunn = result.get("saeunn", [])
+        if saeunn:
+            rows = []
+            for s in saeunn:
+                w = s.get("winner", "비슷")
+                badge = "🔴 롯데 우세" if w == "롯데" else ("🔵 더현대 우세" if w == "더현대" else "⚪ 비슷")
+                rows.append({
+                    "사은행사 유형": s.get("type", ""),
+                    "롯데백화점": s.get("lotte", "—"),
+                    "더현대 대구": s.get("hyundai", "—"),
+                    "우세": badge,
+                    "비교 포인트": s.get("point", ""),
+                })
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+        else:
+            st.info("사은행사 정보가 없습니다.")
 
     st.subheader("🧠 AI 경쟁 분석")
     c1, c2, c3 = st.columns(3)
