@@ -37,19 +37,16 @@ def safe_parse_json(text):
     start = text.find('{')
     end = text.rfind('}')
     if start != -1 and end != -1 and end > start:
+        chunk = text[start:end + 1]
         try:
-            return json.loads(text[start:end + 1])
+            return json.loads(chunk)
         except json.JSONDecodeError:
-            pass
-
-    # 첫 [ 부터 마지막 ] 까지 추출
-    start = text.find('[')
-    end = text.rfind(']')
-    if start != -1 and end != -1 and end > start:
-        try:
-            return json.loads(text[start:end + 1])
-        except json.JSONDecodeError:
-            pass
+            # trailing comma 제거 후 재시도
+            chunk_clean = re.sub(r',\s*([}\]])', r'\1', chunk)
+            try:
+                return json.loads(chunk_clean)
+            except json.JSONDecodeError:
+                pass
 
     return {}
 
@@ -110,9 +107,10 @@ insight는 롯데 영업기획팀 입장의 실전 전략 제언으로 작성"""
         model=model, max_tokens=4096,
         messages=[{"role": "user", "content": prompt}]
     )
-    parsed = safe_parse_json(resp.content[0].text)
+    raw_text = resp.content[0].text
+    parsed = safe_parse_json(raw_text)
     if not parsed:
-        raise ValueError("AI 응답을 파싱할 수 없습니다. 다시 시도해주세요.")
+        raise ValueError(f"AI 응답을 파싱할 수 없습니다.\n\n--- AI 원시 응답 (처음 800자) ---\n{raw_text[:800]}")
     return parsed
 
 
