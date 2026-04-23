@@ -2,7 +2,7 @@
 백화점 경쟁사 행사 AI 분석 시스템 — Streamlit 버전
 Streamlit Cloud 배포용 (이미지 업로드 기반)
 """
-import os, json, base64, io, re
+import os, base64, io
 from datetime import datetime
 import streamlit as st
 import anthropic
@@ -20,39 +20,76 @@ def get_api_key():
         pass
     return os.environ.get("ANTHROPIC_API_KEY", "")
 
-SYSTEM = "당신은 백화점 MD 경쟁분석 전문가입니다. 이미지에서 행사 정보를 추출해 JSON으로만 응답하세요. 마크다운 없이 순수 JSON만 출력하세요."
+SYSTEM = "당신은 백화점 MD 경쟁분석 전문가입니다."
 
+# Tool Use 스키마 — extract_events용
+EXTRACT_TOOL = [{
+    "name": "save_events",
+    "description": "이미지에서 추출한 행사 목록을 저장합니다.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "events": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "category": {"type": "string"},
+                        "name":     {"type": "string"},
+                        "detail":   {"type": "string"},
+                        "period":   {"type": "string"},
+                        "type":     {"type": "string"},
+                    },
+                    "required": ["category", "name", "detail", "period", "type"],
+                },
+            }
+        },
+        "required": ["events"],
+    },
+}]
 
-def safe_parse_json(text):
-    text = re.sub(r"```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-    text = text.replace("```", "").strip()
-
-    def try_loads(s):
-        # strict=False: 문자열 값 내 실제 줄바꿈 허용
-        try:
-            return json.loads(s, strict=False)
-        except json.JSONDecodeError:
-            pass
-        # trailing comma 제거 후 재시도
-        s2 = re.sub(r',\s*([}\]])', r'\1', s)
-        try:
-            return json.loads(s2, strict=False)
-        except json.JSONDecodeError:
-            return None
-
-    result = try_loads(text)
-    if result is not None:
-        return result
-
-    # 첫 { 부터 마지막 } 까지 추출
-    start = text.find('{')
-    end = text.rfind('}')
-    if start != -1 and end != -1 and end > start:
-        result = try_loads(text[start:end + 1])
-        if result is not None:
-            return result
-
-    return {}
+# Tool Use 스키마 — compare용
+COMPARE_TOOL = [{
+    "name": "save_analysis",
+    "description": "두 백화점 행사 비교 분석 결과를 저장합니다.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "categories": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "category": {"type": "string"},
+                        "lotte":    {"type": "string"},
+                        "hyundai":  {"type": "string"},
+                        "winner":   {"type": "string", "enum": ["롯데", "더현대", "비슷"]},
+                        "point":    {"type": "string"},
+                    },
+                    "required": ["category", "lotte", "hyundai", "winner", "point"],
+                },
+            },
+            "saeunn": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "type":    {"type": "string"},
+                        "lotte":   {"type": "string"},
+                        "hyundai": {"type": "string"},
+                        "winner":  {"type": "string", "enum": ["롯데", "더현대", "비슷"]},
+                        "point":   {"type": "string"},
+                    },
+                    "required": ["type", "lotte", "hyundai", "winner", "point"],
+                },
+            },
+            "lotte_strength":   {"type": "array", "items": {"type": "string"}},
+            "hyundai_strength": {"type": "array", "items": {"type": "string"}},
+            "insight":          {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["categories", "saeunn", "lotte_strength", "hyundai_strength", "insight"],
+    },
+}]
 
 
 def extract_events(cl, uploaded_files, store_name, model="claude-sonnet-4-6"):
@@ -64,58 +101,45 @@ def extract_events(cl, uploaded_files, store_name, model="claude-sonnet-4-6"):
         mime = f.type or "image/jpeg"
         content.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}})
         f.seek(0)
-    content.append({"type": "text", "text": f"""이 이미지들은 {store_name} 카카오채널 스크린샷입니다.
-모든 행사·팝업·사은혜택·이벤트를 빠짐없이 추출하세요.
-JSON 형식: {{"events":[{{"category":"상품군","name":"행사명","detail":"내용(50자 이내)","period":"기간","type":"유형"}}]}}
-category 분류: 패션/스포츠·레저/뷰티/식품F&B/리빙가구/팝업스토어/사은혜택/문화이벤트"""})
+    content.append({"type": "text", "text": (
+        f"이 이미지들은 {store_name} 카카오채널 스크린샷입니다. "
+        "모든 행사·팝업·사은혜택·이벤트를 빠짐없이 추출하고 save_events 툴로 저장하세요. "
+        "category 분류: 패션/스포츠·레저/뷰티/식품F&B/리빙가구/팝업스토어/사은혜택/문화이벤트"
+    )})
     resp = cl.messages.create(
         model=model, max_tokens=4096,
-        system=SYSTEM, messages=[{"role": "user", "content": content}]
+        system=SYSTEM,
+        tools=EXTRACT_TOOL,
+        tool_choice={"type": "tool", "name": "save_events"},
+        messages=[{"role": "user", "content": content}],
     )
-    parsed = safe_parse_json(resp.content[0].text)
-    return parsed.get("events", [])
+    for block in resp.content:
+        if block.type == "tool_use":
+            return block.input.get("events", [])
+    return []
 
 
 def compare(cl, lotte, hyundai, model="claude-sonnet-4-6"):
     lt = "\n".join([f"[{e['category']}] {e['name']}: {e['detail']}" for e in lotte])
     ht = "\n".join([f"[{e['category']}] {e['name']}: {e['detail']}" for e in hyundai])
-    prompt = f"""롯데백화점 대구점과 더현대 대구의 행사를 두 가지 관점으로 비교 분석하세요.
-
-롯데 행사 목록:
-{lt}
-
-더현대 행사 목록:
-{ht}
-
-아래 JSON 형식으로만 응답 (마크다운 없이 순수 JSON):
-{{
-  "categories": [
-    {{"category":"상품군명","lotte":"롯데 행사 요약","hyundai":"현대 행사 요약","winner":"롯데|더현대|비슷","point":"한줄 비교 포인트"}}
-  ],
-  "saeunn": [
-    {{"type":"사은행사 유형","lotte":"롯데 내용","hyundai":"현대 내용","winner":"롯데|더현대|비슷","point":"한줄 비교 포인트"}}
-  ],
-  "lotte_strength": ["강점1","강점2","강점3"],
-  "hyundai_strength": ["강점1","강점2","강점3"],
-  "insight": ["제언1","제언2","제언3","제언4"]
-}}
-
-[categories] 상품군별 행사 비교:
-상품군: 패션/스포츠·레저/뷰티/식품F&B/리빙가구/팝업스토어/문화이벤트
-
-[saeunn] 사은행사 비교:
-유형: 사은품·경품/추가할인·쿠폰/적립혜택/VIP·우수고객혜택/제휴카드혜택/기타사은행사
-
-insight는 롯데 영업기획팀 입장의 실전 전략 제언으로 작성"""
+    prompt = (
+        "롯데백화점 대구점과 더현대 대구의 행사를 비교 분석하고 save_analysis 툴로 저장하세요.\n\n"
+        f"[롯데 행사]\n{lt or '(정보 없음)'}\n\n"
+        f"[더현대 행사]\n{ht or '(정보 없음)'}\n\n"
+        "categories: 패션/스포츠·레저/뷰티/식품F&B/리빙가구/팝업스토어/문화이벤트 별로 작성\n"
+        "saeunn: 사은품·경품/추가할인·쿠폰/적립혜택/VIP혜택/제휴카드혜택/기타 별로 작성\n"
+        "insight: 롯데 영업기획팀 입장의 실전 전략 제언 4가지"
+    )
     resp = cl.messages.create(
         model=model, max_tokens=4096,
-        messages=[{"role": "user", "content": prompt}]
+        tools=COMPARE_TOOL,
+        tool_choice={"type": "tool", "name": "save_analysis"},
+        messages=[{"role": "user", "content": prompt}],
     )
-    raw_text = resp.content[0].text
-    parsed = safe_parse_json(raw_text)
-    if not parsed:
-        raise ValueError(f"AI 응답을 파싱할 수 없습니다.\n\n--- AI 원시 응답 (처음 800자) ---\n{raw_text[:800]}")
-    return parsed
+    for block in resp.content:
+        if block.type == "tool_use":
+            return block.input
+    raise ValueError("AI가 분석 결과를 반환하지 않았습니다. 다시 시도해주세요.")
 
 
 def build_excel(data):
