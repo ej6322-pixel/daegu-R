@@ -48,13 +48,30 @@ def fetch_website_content(url):
         return f"크롤링 실패: {str(e)}"
 
 
+def safe_parse_json(text):
+    """JSON 파싱 실패 시 마지막 완성된 블록까지만 잘라서 재시도"""
+    text = re.sub(r"```json?\n?", "", text).replace("```", "").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # 마지막 완성된 } 위치까지 잘라서 재시도
+        for end in ('}', ']'):
+            idx = text.rfind(end)
+            if idx != -1:
+                try:
+                    return json.loads(text[:idx + 1])
+                except json.JSONDecodeError:
+                    continue
+        return {}
+
+
 def extract_events(cl, url, store_name, model="claude-sonnet-4-6"):
     """웹페이지에서 행사 정보 추출"""
     if not url:
         return []
-    
+
     content = fetch_website_content(url)
-    
+
     prompt = f"""{store_name} 백화점 홈페이지 내용입니다. 진행 중인 모든 행사·팝업·사은혜택·이벤트를 추출하세요.
 
 웹페이지 내용:
@@ -65,20 +82,17 @@ JSON 형식 (한글로 작성): {{"events":[{{"category":"상품군","name":"행
 추출할 정보:
 - category: 패션/스포츠·레저/뷰티/식품F&B/리빙가구/팝업스토어/사은혜택/문화이벤트
 - name: 행사명
-- detail: 행사 내용/설명
+- detail: 행사 내용/설명 (간결하게 50자 이내)
 - period: 기간 (예: 04.23(목) ~ 05.06(수))
 - type: 진행중/예정/종료
 """
-    
+
     resp = cl.messages.create(
-        model=model, max_tokens=2000,
+        model=model, max_tokens=4096,
         system=SYSTEM, messages=[{"role": "user", "content": prompt}]
     )
-    raw = re.sub(r"```json?\n?", "", resp.content[0].text).replace("```", "").strip()
-    try:
-        return json.loads(raw).get("events", [])
-    except json.JSONDecodeError:
-        return []
+    parsed = safe_parse_json(resp.content[0].text)
+    return parsed.get("events", [])
 
 
 def compare(cl, lotte, hyundai, model="claude-sonnet-4-6"):
@@ -97,11 +111,13 @@ JSON 형식으로만 응답:
 상품군: 패션/스포츠·레저/뷰티/식품F&B/리빙가구/팝업스토어/사은혜택/문화이벤트
 insight는 롯데 영업기획팀 입장의 실전 전략 제언으로 작성"""
     resp = cl.messages.create(
-        model=model, max_tokens=2000,
+        model=model, max_tokens=4096,
         messages=[{"role": "user", "content": prompt}]
     )
-    raw = re.sub(r"```json?\n?", "", resp.content[0].text).replace("```", "").strip()
-    return json.loads(raw)
+    parsed = safe_parse_json(resp.content[0].text)
+    if not parsed:
+        raise ValueError("AI 응답을 파싱할 수 없습니다. 다시 시도해주세요.")
+    return parsed
 
 
 def build_excel(data):
