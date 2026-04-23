@@ -150,21 +150,99 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 사이드바에서 API 키 입력
+# ── 사이드바 설정 ──────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### ⚙️ 설정")
+    st.markdown("### 🔑 API 설정")
+    st.divider()
+    
+    # API 키 입력
     preset_key = get_api_key()
     api_key = st.text_input(
         "Anthropic API Key",
         value=preset_key,
         type="password",
         placeholder="sk-ant-...",
-        help="console.anthropic.com 에서 발급한 API 키를 입력하세요.",
+        help="console.anthropic.com 에서 발급",
     )
+    
     if api_key:
-        st.success("API 키 설정됨", icon="✅")
+        st.success("✅ API 키 설정됨", icon="✅")
     else:
-        st.warning("API 키를 입력해주세요.", icon="⚠️")
+        st.warning("⚠️ API 키를 입력해주세요", icon="⚠️")
+    
+    st.divider()
+    st.markdown("### ⚙️ 분석 설정")
+    
+    # 모델 선택
+    model = st.selectbox(
+        "AI 모델 선택",
+        ["claude-sonnet-4-20250514", "claude-opus-4-1-20250805"],
+        help="사용할 Claude 모델을 선택하세요"
+    )
+    
+    # 분석 언어
+    analysis_lang = st.radio(
+        "분석 결과 언어",
+        ["한국어", "English"],
+        horizontal=True,
+    )
+    
+    st.divider()
+    st.markdown("### 📊 수동 설정")
+    
+    # 최대 파일 수
+    max_files = st.slider(
+        "최대 업로드 파일 수",
+        min_value=1,
+        max_value=20,
+        value=10,
+        help="한 번에 분석할 최대 이미지 수"
+    )
+    
+    # 상세 분석 여부
+    detailed = st.checkbox(
+        "상세 분석 활성화",
+        value=True,
+        help="더 자세한 분석 결과 포함"
+    )
+    
+    st.divider()
+    st.markdown("### ℹ️ 정보")
+    
+    with st.expander("💡 사용 가이드"):
+        st.markdown("""
+        1. **API 키 입력**: 좌측 상단에 API 키 입력
+        2. **이미지 업로드**: 각 백화점 카카오채널 스크린샷 업로드
+        3. **분석 시작**: "AI 분석 시작" 버튼 클릭
+        4. **결과 확인**: 자동으로 분석 결과 및 Excel 다운로드
+        
+        **팁**: 최대 20장까지 업로드 가능하며, 품질 좋은 스크린샷일수록 정확합니다.
+        """)
+    
+    with st.expander("🔧 모델 정보"):
+        st.markdown(f"""
+        **현재 선택 모델**: `{model}`
+        
+        - **Claude Sonnet 4**: 빠르고 효율적
+        - **Claude Opus 4.1**: 고성능, 정확도 높음
+        
+        분석 소요 시간: 20~40초 (파일 수에 따라 변동)
+        """)
+    
+    with st.expander("❓ FAQ"):
+        st.markdown("""
+        **Q. API 키는 어디서 구하나요?**
+        A. https://console.anthropic.com 에서 발급받을 수 있습니다.
+        
+        **Q. 분석 정확도를 높이려면?**
+        A. 선명한 스크린샷을 업로드하고 상세 분석 옵션을 활성화하세요.
+        
+        **Q. Excel 파일에는 뭐가 들어가나요?**
+        A. 비교표, 각 백화점 행사 상세 내용, AI 분석 의견이 포함됩니다.
+        """)
+    
+    st.divider()
+    st.caption("🏬 백화점 행사 AI 분석 v1.0")
 
 st.markdown("## 🏬 백화점 행사 AI 분석")
 st.caption("롯데백화점 대구점 vs 더현대 대구 — 카카오채널 스크린샷 비교 분석")
