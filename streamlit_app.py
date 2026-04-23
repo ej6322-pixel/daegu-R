@@ -1,18 +1,16 @@
 """
-백화점 경쟁사 행사 AI 분석 시스템 — Streamlit 버전 (웹크롤링)
-Streamlit Cloud 배포용 (URL 기반 분석)
+백화점 경쟁사 행사 AI 분석 시스템 — Streamlit 버전
+Streamlit Cloud 배포용 (이미지 업로드 기반)
 """
 import os, json, base64, io, re
 from datetime import datetime
 import streamlit as st
 import anthropic
-import requests
-from bs4 import BeautifulSoup
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# ── API 키 설정 (Secrets → 환경변수 → 사이드바 입력 순서) ──
+# ── API 키 설정 ──
 def get_api_key():
     try:
         key = st.secrets.get("ANTHROPIC_API_KEY", "")
@@ -22,39 +20,14 @@ def get_api_key():
         pass
     return os.environ.get("ANTHROPIC_API_KEY", "")
 
-SYSTEM = "당신은 백화점 MD 경쟁분석 전문가입니다. 홈페이지에서 행사 정보를 추출해 JSON으로만 응답하세요. 마크다운 없이 순수 JSON만 출력하세요."
-
-
-def fetch_website_content(url):
-    """웹사이트 내용 크롤링"""
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        response = requests.get(url, headers=headers, timeout=10)
-        response.encoding = 'utf-8'
-        
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # 스크립트, 스타일 제거
-        for script in soup(["script", "style"]):
-            script.decompose()
-        
-        # 텍스트 추출
-        text = soup.get_text(separator='\n', strip=True)
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
-        return '\n'.join(lines[:5000])  # 첫 5000자 제한
-    except Exception as e:
-        return f"크롤링 실패: {str(e)}"
+SYSTEM = "당신은 백화점 MD 경쟁분석 전문가입니다. 이미지에서 행사 정보를 추출해 JSON으로만 응답하세요. 마크다운 없이 순수 JSON만 출력하세요."
 
 
 def safe_parse_json(text):
-    """JSON 파싱 실패 시 마지막 완성된 블록까지만 잘라서 재시도"""
     text = re.sub(r"```json?\n?", "", text).replace("```", "").strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # 마지막 완성된 } 위치까지 잘라서 재시도
         for end in ('}', ']'):
             idx = text.rfind(end)
             if idx != -1:
@@ -65,31 +38,22 @@ def safe_parse_json(text):
         return {}
 
 
-def extract_events(cl, url, store_name, model="claude-sonnet-4-6"):
-    """웹페이지에서 행사 정보 추출"""
-    if not url:
+def extract_events(cl, uploaded_files, store_name, model="claude-sonnet-4-6"):
+    if not uploaded_files:
         return []
-
-    content = fetch_website_content(url)
-
-    prompt = f"""{store_name} 백화점 홈페이지 내용입니다. 진행 중인 모든 행사·팝업·사은혜택·이벤트를 추출하세요.
-
-웹페이지 내용:
-{content[:3000]}
-
-JSON 형식 (한글로 작성): {{"events":[{{"category":"상품군","name":"행사명","detail":"내용","period":"기간","type":"유형"}}]}}
-
-추출할 정보:
-- category: 패션/스포츠·레저/뷰티/식품F&B/리빙가구/팝업스토어/사은혜택/문화이벤트
-- name: 행사명
-- detail: 행사 내용/설명 (간결하게 50자 이내)
-- period: 기간 (예: 04.23(목) ~ 05.06(수))
-- type: 진행중/예정/종료
-"""
-
+    content = []
+    for f in uploaded_files:
+        data = base64.b64encode(f.read()).decode()
+        mime = f.type or "image/jpeg"
+        content.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}})
+        f.seek(0)
+    content.append({"type": "text", "text": f"""이 이미지들은 {store_name} 카카오채널 스크린샷입니다.
+모든 행사·팝업·사은혜택·이벤트를 빠짐없이 추출하세요.
+JSON 형식: {{"events":[{{"category":"상품군","name":"행사명","detail":"내용(50자 이내)","period":"기간","type":"유형"}}]}}
+category 분류: 패션/스포츠·레저/뷰티/식품F&B/리빙가구/팝업스토어/사은혜택/문화이벤트"""})
     resp = cl.messages.create(
         model=model, max_tokens=4096,
-        system=SYSTEM, messages=[{"role": "user", "content": prompt}]
+        system=SYSTEM, messages=[{"role": "user", "content": content}]
     )
     parsed = safe_parse_json(resp.content[0].text)
     return parsed.get("events", [])
@@ -100,11 +64,13 @@ def compare(cl, lotte, hyundai, model="claude-sonnet-4-6"):
     ht = "\n".join([f"[{e['category']}] {e['name']}: {e['detail']}" for e in hyundai])
     prompt = f"""롯데백화점 대구점과 더현대 대구의 행사를 두 가지 관점으로 비교 분석하세요.
 
-롯데 행사 목록:\n{lt}
+롯데 행사 목록:
+{lt}
 
-더현대 행사 목록:\n{ht}
+더현대 행사 목록:
+{ht}
 
-아래 JSON 형식으로만 응답하세요 (마크다운 없이 순수 JSON):
+아래 JSON 형식으로만 응답 (마크다운 없이 순수 JSON):
 {{
   "categories": [
     {{"category":"상품군명","lotte":"롯데 행사 요약","hyundai":"현대 행사 요약","winner":"롯데|더현대|비슷","point":"한줄 비교 포인트"}}
@@ -117,10 +83,10 @@ def compare(cl, lotte, hyundai, model="claude-sonnet-4-6"):
   "insight": ["제언1","제언2","제언3","제언4"]
 }}
 
-[categories] 상품군별 행사 비교 — 각 상품군에서 어느 백화점이 더 강한지:
+[categories] 상품군별 행사 비교:
 상품군: 패션/스포츠·레저/뷰티/식품F&B/리빙가구/팝업스토어/문화이벤트
 
-[saeunn] 사은행사 비교 — 고객 혜택 측면 비교:
+[saeunn] 사은행사 비교:
 유형: 사은품·경품/추가할인·쿠폰/적립혜택/VIP·우수고객혜택/제휴카드혜택/기타사은행사
 
 insight는 롯데 영업기획팀 입장의 실전 전략 제언으로 작성"""
@@ -151,9 +117,10 @@ def build_excel(data):
         s = Side(border_style="thin", color="E0E0E0")
         c.border = Border(left=s, right=s, top=s, bottom=s)
 
+    # 시트1: 상품군별 비교
     ws1 = wb.active; ws1.title = "상품군별 비교"; ws1.sheet_view.showGridLines = False
     ws1.merge_cells("A1:E1")
-    c = ws1["A1"]; c.value = f"롯데 vs 더현대 행사 비교 ({data.get('analyzed_at', '')})"; th(c, sz=12)
+    c = ws1["A1"]; c.value = f"롯데 vs 더현대 상품군별 행사 비교 ({data.get('analyzed_at', '')})"; th(c, sz=12)
     ws1.row_dimensions[1].height = 26
     for i, (h, w) in enumerate([("상품군", 14), ("롯데백화점", 36), ("더현대 대구", 36), ("우세", 10), ("비교포인트", 32)], 1):
         ws1.column_dimensions[get_column_letter(i)].width = w
@@ -165,28 +132,9 @@ def build_excel(data):
         for ci, v in enumerate([cat.get("category"), cat.get("lotte", "—"), cat.get("hyundai", "—"), w, cat.get("point", "")], 1):
             td(ws1.cell(row=r, column=ci, value=v), bg=bg, bold=(ci == 1 or ci == 4), fc=wfc if ci == 4 else "111111", center=(ci == 1 or ci == 4))
 
-    ws2 = wb.create_sheet("롯데 행사 상세"); ws2.sheet_view.showGridLines = False
-    ws2.merge_cells("A1:E1"); c = ws2["A1"]; c.value = "롯데백화점 대구점 행사 전체"; th(c, bg="E8002D", sz=12); ws2.row_dimensions[1].height = 24
-    for i, (h, w) in enumerate([("카테고리", 12), ("행사명", 28), ("내용", 42), ("기간", 14), ("유형", 10)], 1):
-        ws2.column_dimensions[get_column_letter(i)].width = w; th(ws2.cell(row=2, column=i, value=h), bg="C00020")
-    for r, ev in enumerate(data.get("lotte_events", []), 3):
-        bg = "FFF5F5" if r % 2 == 0 else "FFFFFF"
-        for ci, k in enumerate(["category", "name", "detail", "period", "type"], 1):
-            td(ws2.cell(row=r, column=ci, value=ev.get(k, "")), bg=bg)
-        ws2.row_dimensions[r].height = 36
-
-    ws3 = wb.create_sheet("더현대 행사 상세"); ws3.sheet_view.showGridLines = False
-    ws3.merge_cells("A1:E1"); c = ws3["A1"]; c.value = "더현대 대구 행사 전체"; th(c, bg="003087", sz=12); ws3.row_dimensions[1].height = 24
-    for i, (h, w) in enumerate([("카테고리", 12), ("행사명", 28), ("내용", 42), ("기간", 14), ("유형", 10)], 1):
-        ws3.column_dimensions[get_column_letter(i)].width = w; th(ws3.cell(row=2, column=i, value=h), bg="003087")
-    for r, ev in enumerate(data.get("hyundai_events", []), 3):
-        bg = "F0F4FF" if r % 2 == 0 else "FFFFFF"
-        for ci, k in enumerate(["category", "name", "detail", "period", "type"], 1):
-            td(ws3.cell(row=r, column=ci, value=ev.get(k, "")), bg=bg)
-        ws3.row_dimensions[r].height = 36
-
+    # 시트2: 사은행사 비교
     ws_sa = wb.create_sheet("사은행사 비교"); ws_sa.sheet_view.showGridLines = False
-    ws_sa.merge_cells("A1:E1"); c = ws_sa["A1"]; c.value = f"사은행사 비교 ({data.get('analyzed_at', '')})"; th(c, bg="856404", sz=12); ws_sa.row_dimensions[1].height = 26
+    ws_sa.merge_cells("A1:E1"); c = ws_sa["A1"]; c.value = f"롯데 vs 더현대 사은행사 비교 ({data.get('analyzed_at', '')})"; th(c, bg="856404", sz=12); ws_sa.row_dimensions[1].height = 26
     for i, (h, w) in enumerate([("사은행사 유형", 18), ("롯데백화점", 36), ("더현대 대구", 36), ("우세", 10), ("비교포인트", 32)], 1):
         ws_sa.column_dimensions[get_column_letter(i)].width = w
         th(ws_sa.cell(row=2, column=i, value=h), bg="6b4f00")
@@ -197,6 +145,29 @@ def build_excel(data):
         for ci, v in enumerate([sa.get("type"), sa.get("lotte", "—"), sa.get("hyundai", "—"), w, sa.get("point", "")], 1):
             td(ws_sa.cell(row=r, column=ci, value=v), bg=bg, bold=(ci == 1 or ci == 4), fc=wfc if ci == 4 else "111111", center=(ci == 1 or ci == 4))
 
+    # 시트3: 롯데 행사 상세
+    ws2 = wb.create_sheet("롯데 행사 상세"); ws2.sheet_view.showGridLines = False
+    ws2.merge_cells("A1:E1"); c = ws2["A1"]; c.value = "롯데백화점 대구점 행사 전체"; th(c, bg="E8002D", sz=12); ws2.row_dimensions[1].height = 24
+    for i, (h, w) in enumerate([("카테고리", 12), ("행사명", 28), ("내용", 42), ("기간", 14), ("유형", 10)], 1):
+        ws2.column_dimensions[get_column_letter(i)].width = w; th(ws2.cell(row=2, column=i, value=h), bg="C00020")
+    for r, ev in enumerate(data.get("lotte_events", []), 3):
+        bg = "FFF5F5" if r % 2 == 0 else "FFFFFF"
+        for ci, k in enumerate(["category", "name", "detail", "period", "type"], 1):
+            td(ws2.cell(row=r, column=ci, value=ev.get(k, "")), bg=bg)
+        ws2.row_dimensions[r].height = 36
+
+    # 시트4: 더현대 행사 상세
+    ws3 = wb.create_sheet("더현대 행사 상세"); ws3.sheet_view.showGridLines = False
+    ws3.merge_cells("A1:E1"); c = ws3["A1"]; c.value = "더현대 대구 행사 전체"; th(c, bg="003087", sz=12); ws3.row_dimensions[1].height = 24
+    for i, (h, w) in enumerate([("카테고리", 12), ("행사명", 28), ("내용", 42), ("기간", 14), ("유형", 10)], 1):
+        ws3.column_dimensions[get_column_letter(i)].width = w; th(ws3.cell(row=2, column=i, value=h), bg="003087")
+    for r, ev in enumerate(data.get("hyundai_events", []), 3):
+        bg = "F0F4FF" if r % 2 == 0 else "FFFFFF"
+        for ci, k in enumerate(["category", "name", "detail", "period", "type"], 1):
+            td(ws3.cell(row=r, column=ci, value=ev.get(k, "")), bg=bg)
+        ws3.row_dimensions[r].height = 36
+
+    # 시트5: AI 분석
     ws4 = wb.create_sheet("AI 분석"); ws4.sheet_view.showGridLines = False
     ws4.column_dimensions["A"].width = 18; ws4.column_dimensions["B"].width = 60
     ws4.merge_cells("A1:B1"); c = ws4["A1"]; c.value = "AI 경쟁 분석 — MD 전략 제언"; th(c, sz=12); ws4.row_dimensions[1].height = 24
@@ -222,17 +193,7 @@ def build_excel(data):
 # ── Streamlit UI ──────────────────────────────────────────────────────────────
 st.set_page_config(page_title="백화점 행사 AI 분석", page_icon="🏬", layout="wide")
 
-st.markdown("""
-<style>
-[data-testid="stHeader"] {background:#111}
-.store-lotte {color:#e8002d; font-weight:700}
-.store-hyundai {color:#003087; font-weight:700}
-</style>
-""", unsafe_allow_html=True)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 🔑 사이드바 — API 및 설정
-# ──────────────────────────────────────────────────────────────────────────────
+# 사이드바
 preset_key = get_api_key()
 api_key = st.sidebar.text_input(
     "🔑 Anthropic API Key",
@@ -241,117 +202,76 @@ api_key = st.sidebar.text_input(
     placeholder="sk-ant-...",
     help="console.anthropic.com 에서 발급",
 )
-
 if api_key:
     st.sidebar.success("✅ API 키 설정됨")
 else:
     st.sidebar.warning("⚠️ API 키를 입력해주세요")
 
 st.sidebar.divider()
-
-st.sidebar.markdown("### ⚙️ 분석 설정")
 model = st.sidebar.selectbox(
-    "AI 모델 선택",
+    "AI 모델",
     ["claude-sonnet-4-6", "claude-opus-4-7"],
-    help="사용할 Claude 모델 선택"
 )
-
-analysis_lang = st.sidebar.radio(
-    "분석 언어",
-    ["한국어", "English"],
-    horizontal=True,
-)
-
 st.sidebar.divider()
-st.sidebar.markdown("### 📊 옵션")
-
-max_files = st.sidebar.slider(
-    "최대 URL 개수",
-    min_value=1,
-    max_value=10,
-    value=2,
-)
-
-detailed = st.sidebar.checkbox(
-    "상세 분석 활성화",
-    value=True,
-)
-
-st.sidebar.divider()
-
 with st.sidebar.expander("💡 사용 가이드"):
     st.markdown("""
-    1. **API 키 입력**: 위에 API 키 입력
-    2. **URL 입력**: 백화점 홈페이지 URL 입력
-    3. **분석 시작**: 버튼 클릭
-    4. **결과 확인**: Excel 다운로드
+1. API 키 입력
+2. 롯데 / 더현대 스크린샷 업로드
+3. AI 분석 시작 클릭
+4. 결과 확인 후 Excel 다운로드
     """)
+st.sidebar.caption("🏬 백화점 행사 AI 분석 v3.0")
 
-with st.sidebar.expander("❓ FAQ"):
-    st.markdown("""
-    **Q. API 키는?**
-    A. https://console.anthropic.com
-    
-    **Q. 정확도?**
-    A. 최신 URL 입력 권장
-    """)
-
-st.sidebar.divider()
-st.sidebar.caption("🏬 백화점 행사 AI 분석 v2.0")
-
+# 메인
 st.markdown("## 🏬 백화점 행사 AI 분석")
-st.caption("롯데백화점 대구점 vs 더현대 대구 — 홈페이지 자동 분석")
-
-# 기본 URL 설정
-default_lotte_url = "https://www.lotteshopping.com/contents/shpgInfo?cstrCd=0023&cntsTpCd=C00903"
-default_hyundai_url = "https://www.ehyundai.com/newPortal/SN/SN_0101000.do?branchCd=B00146000"
+st.caption("롯데백화점 대구점 vs 더현대 대구 — 카카오채널 스크린샷 업로드")
 
 col_l, col_h = st.columns(2)
 with col_l:
     st.markdown("### 🔴 롯데백화점 대구점")
-    lotte_url = st.text_input(
-        "롯데 URL",
-        value=default_lotte_url,
-        placeholder="https://...",
-        label_visibility="collapsed",
+    lotte_files = st.file_uploader(
+        "카카오채널 스크린샷 (최대 10장)",
+        type=["jpg", "jpeg", "png", "webp"],
+        accept_multiple_files=True,
+        key="lotte",
     )
-    if lotte_url:
-        st.caption("✅ 롯데 URL 입력됨")
+    if lotte_files:
+        cols = st.columns(min(len(lotte_files), 5))
+        for i, f in enumerate(lotte_files[:10]):
+            cols[i % 5].image(f, width=80)
 
 with col_h:
     st.markdown("### 🔵 더현대 대구")
-    hyundai_url = st.text_input(
-        "현대 URL",
-        value=default_hyundai_url,
-        placeholder="https://...",
-        label_visibility="collapsed",
+    hyundai_files = st.file_uploader(
+        "카카오채널 스크린샷 (최대 10장)",
+        type=["jpg", "jpeg", "png", "webp"],
+        accept_multiple_files=True,
+        key="hyundai",
     )
-    if hyundai_url:
-        st.caption("✅ 현대 URL 입력됨")
+    if hyundai_files:
+        cols = st.columns(min(len(hyundai_files), 5))
+        for i, f in enumerate(hyundai_files[:10]):
+            cols[i % 5].image(f, width=80)
 
 st.divider()
 
 if st.button("🤖 AI 분석 시작", type="primary", use_container_width=True):
-    if not lotte_url and not hyundai_url:
-        st.error("최소 하나의 URL을 입력해주세요.")
+    if not lotte_files and not hyundai_files:
+        st.error("이미지를 최소 한 장 이상 업로드해주세요.")
     elif not api_key:
         st.error("왼쪽 사이드바에 Anthropic API 키를 입력해주세요.")
     else:
         cl = anthropic.Anthropic(api_key=api_key)
-        with st.spinner("웹페이지 분석 중... (20~40초 소요)"):
+        with st.spinner("이미지 분석 중... (20~40초 소요)"):
             try:
-                lotte_ev = extract_events(cl, lotte_url, "롯데백화점 대구점", model) if lotte_url else []
-                hyundai_ev = extract_events(cl, hyundai_url, "더현대 대구", model) if hyundai_url else []
-                
-                if not lotte_ev and not hyundai_ev:
-                    st.error("분석 결과가 없습니다. 웹페이지를 확인해주세요.")
-                else:
-                    result = compare(cl, lotte_ev, hyundai_ev, model)
-                    result["lotte_events"] = lotte_ev
-                    result["hyundai_events"] = hyundai_ev
-                    result["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    st.session_state["result"] = result
-                    st.success("✅ 분석 완료!")
+                lotte_ev = extract_events(cl, lotte_files[:10], "롯데백화점 대구점", model)
+                hyundai_ev = extract_events(cl, hyundai_files[:10], "더현대 대구", model)
+                result = compare(cl, lotte_ev, hyundai_ev, model)
+                result["lotte_events"] = lotte_ev
+                result["hyundai_events"] = hyundai_ev
+                result["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                st.session_state["result"] = result
+                st.success("✅ 분석 완료!")
             except Exception as e:
                 st.error(f"분석 실패: {e}")
 
