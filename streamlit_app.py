@@ -27,26 +27,30 @@ def safe_parse_json(text):
     text = re.sub(r"```(?:json)?\s*", "", text, flags=re.IGNORECASE)
     text = text.replace("```", "").strip()
 
-    # 직접 파싱 시도
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
+    def try_loads(s):
+        # strict=False: 문자열 값 내 실제 줄바꿈 허용
+        try:
+            return json.loads(s, strict=False)
+        except json.JSONDecodeError:
+            pass
+        # trailing comma 제거 후 재시도
+        s2 = re.sub(r',\s*([}\]])', r'\1', s)
+        try:
+            return json.loads(s2, strict=False)
+        except json.JSONDecodeError:
+            return None
+
+    result = try_loads(text)
+    if result is not None:
+        return result
 
     # 첫 { 부터 마지막 } 까지 추출
     start = text.find('{')
     end = text.rfind('}')
     if start != -1 and end != -1 and end > start:
-        chunk = text[start:end + 1]
-        try:
-            return json.loads(chunk)
-        except json.JSONDecodeError:
-            # trailing comma 제거 후 재시도
-            chunk_clean = re.sub(r',\s*([}\]])', r'\1', chunk)
-            try:
-                return json.loads(chunk_clean)
-            except json.JSONDecodeError:
-                pass
+        result = try_loads(text[start:end + 1])
+        if result is not None:
+            return result
 
     return {}
 
