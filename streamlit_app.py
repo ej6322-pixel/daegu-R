@@ -48,7 +48,7 @@ def fetch_website_content(url):
         return f"크롤링 실패: {str(e)}"
 
 
-def extract_events(cl, url, store_name, model="claude-sonnet-4-20250514"):
+def extract_events(cl, url, store_name, model="claude-sonnet-4-6"):
     """웹페이지에서 행사 정보 추출"""
     if not url:
         return []
@@ -81,7 +81,7 @@ JSON 형식 (한글로 작성): {{"events":[{{"category":"상품군","name":"행
         return []
 
 
-def compare(cl, lotte, hyundai, model="claude-sonnet-4-20250514"):
+def compare(cl, lotte, hyundai, model="claude-sonnet-4-6"):
     lt = "\n".join([f"[{e['category']}] {e['name']}: {e['detail']}" for e in lotte])
     ht = "\n".join([f"[{e['category']}] {e['name']}: {e['detail']}" for e in hyundai])
     prompt = f"""롯데백화점 대구점과 더현대 대구 행사를 비교 분석하세요.
